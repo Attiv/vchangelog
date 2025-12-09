@@ -36,9 +36,21 @@ def save_config(config):
         json.dump(config, f, indent=2)
     print(f"配置已保存到 {CONFIG_PATH}")
 
+def spinner(stop_event):
+    """Display a spinner animation."""
+    import itertools
+    chars = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
+    while not stop_event.is_set():
+        sys.stdout.write(f'\r🤖 AI 总结中... {next(chars)}')
+        sys.stdout.flush()
+        stop_event.wait(0.1)
+    sys.stdout.write('\r' + ' ' * 20 + '\r')
+    sys.stdout.flush()
+
 def call_ai(commits, from_v, to_v, config):
     """Call AI API to summarize commits."""
     import urllib.request
+    import threading
     
     url = config.get('url', '').rstrip('/')
     key = config.get('key', '')
@@ -50,6 +62,11 @@ def call_ai(commits, from_v, to_v, config):
         sys.exit(1)
     
     commits_text = '\n'.join(commits)
+    
+    # Start spinner
+    stop_event = threading.Event()
+    spin_thread = threading.Thread(target=spinner, args=(stop_event,))
+    spin_thread.start()
     
     if lang == 'zh':
         prompt = f"""请总结以下 git commits 生成 changelog，版本从 {from_v} 到 {to_v}。
@@ -79,8 +96,12 @@ Commits:
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             result = json.loads(resp.read())
+            stop_event.set()
+            spin_thread.join()
             return result['choices'][0]['message']['content']
     except Exception as e:
+        stop_event.set()
+        spin_thread.join()
         print(f"AI 调用失败: {e}", file=sys.stderr)
         sys.exit(1)
 

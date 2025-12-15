@@ -25,16 +25,28 @@ CATEGORIES = {
     'other': ('📝 Other', 99),
 }
 
+
+def _strip_emoji_prefix(text):
+    return re.sub(r'^\s*[^\w\s]+\s*', '', text)
+
+
+def get_category_title(cat_type, emoji=True):
+    title = CATEGORIES.get(cat_type, ('📝 Other', 99))[0]
+    return title if emoji else _strip_emoji_prefix(title)
+
+
 def load_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
             return json.load(f)
     return {}
 
+
 def save_config(config):
     with open(CONFIG_PATH, 'w') as f:
         json.dump(config, f, indent=2)
     print(f"配置已保存到 {CONFIG_PATH}")
+
 
 def spinner(stop_event):
     """Display a spinner animation."""
@@ -47,6 +59,7 @@ def spinner(stop_event):
     sys.stdout.write('\r' + ' ' * 20 + '\r')
     sys.stdout.flush()
 
+
 def call_ai(commits, from_v, to_v, config):
     """Call AI API to summarize commits."""
     import urllib.request
@@ -56,6 +69,7 @@ def call_ai(commits, from_v, to_v, config):
     key = config.get('key', '')
     model = config.get('model', 'gpt-3.5-turbo')
     lang = config.get('lang', 'zh')
+    emoji = config.get('emoji', False)
     
     if not url or not key:
         print("错误: 请先配置 AI API (vchangelog --config)", file=sys.stderr)
@@ -69,15 +83,38 @@ def call_ai(commits, from_v, to_v, config):
     spin_thread.start()
     
     if lang == 'zh':
-        prompt = f"""请总结以下 git commits 生成 changelog，版本从 {from_v} 到 {to_v}。
-要求：1. 按类型分组（Features/Bug Fixes/Performance/Chores 等）2. 合并相似的提交 3. 用简洁的中文描述 4. 使用 emoji 前缀
-Commits:
-{commits_text}"""
+        requirements = (
+            "要求：1. 按类型分组（Features/Bug Fixes/Performance/Chores 等）"
+            "2. 合并相似的提交 3. 用简洁的中文描述"
+        )
+        if emoji:
+            requirements += " 4. 使用 emoji 前缀"
+        else:
+            requirements += " 4. 不使用 emoji"
+        prompt = (
+            "请总结以下 git commits 生成 changelog，版本从 "
+            f"{from_v} 到 {to_v}。\n"
+            f"{requirements}\n"
+            "Commits:\n"
+            f"{commits_text}"
+        )
     else:
-        prompt = f"""Summarize the following git commits into a changelog, from version {from_v} to {to_v}.
-Requirements: 1. Group by type (Features/Bug Fixes/Performance/Chores etc.) 2. Merge similar commits 3. Use concise English 4. Use emoji prefixes
-Commits:
-{commits_text}"""
+        requirements = (
+            "Requirements: 1. Group by type "
+            "(Features/Bug Fixes/Performance/Chores etc.) "
+            "2. Merge similar commits 3. Use concise English"
+        )
+        if emoji:
+            requirements += " 4. Use emoji prefixes"
+        else:
+            requirements += " 4. Do not use emoji"
+        prompt = (
+            "Summarize the following git commits into a changelog, from "
+            f"version {from_v} to {to_v}.\n"
+            f"{requirements}\n"
+            "Commits:\n"
+            f"{commits_text}"
+        )
 
     data = json.dumps({
         "model": model,
@@ -105,12 +142,14 @@ Commits:
         print(f"AI 调用失败: {e}", file=sys.stderr)
         sys.exit(1)
 
+
 def run_git(args):
     result = subprocess.run(['git'] + args, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"Git error: {result.stderr}", file=sys.stderr)
         sys.exit(1)
     return result.stdout
+
 
 def get_versions():
     log = run_git(['log', '--oneline', '--all', '--pretty=format:%s'])
@@ -121,12 +160,14 @@ def get_versions():
             versions.append(line.strip())
     return versions
 
+
 def find_commit_for_version(version):
     log = run_git(['log', '--all', '--pretty=format:%H %s'])
     for line in log.split('\n'):
         if version in line:
             return line.split()[0]
     return None
+
 
 def get_commits_between(from_version, to_version):
     from_hash = find_commit_for_version(from_version)
@@ -139,6 +180,7 @@ def get_commits_between(from_version, to_version):
     log = run_git(['log', '--pretty=format:%s', f'{from_hash}..{to_hash}'])
     return [line.strip() for line in log.split('\n') if line.strip()]
 
+
 def parse_commit(message):
     if re.match(VERSION_PATTERN, message):
         return None
@@ -146,6 +188,7 @@ def parse_commit(message):
     if match:
         return {'type': match.group(1).lower(), 'scope': match.group(2), 'description': match.group(3)}
     return {'type': 'other', 'scope': None, 'description': message}
+
 
 def categorize_commits(commits):
     categorized = {}
@@ -159,7 +202,8 @@ def categorize_commits(commits):
         categorized[commit_type].append(parsed)
     return categorized
 
-def format_output(from_v, to_v, categorized, fmt='text'):
+
+def format_output(from_v, to_v, categorized, fmt='text', emoji=True):
     lines = []
     lines.append(f"{'## ' if fmt == 'md' else ''}Changelog: {from_v} → {to_v}\n")
     
@@ -168,7 +212,7 @@ def format_output(from_v, to_v, categorized, fmt='text'):
     for cat_type, commits in sorted_cats:
         if not commits:
             continue
-        cat_name = CATEGORIES.get(cat_type, ('📝 Other', 99))[0]
+        cat_name = get_category_title(cat_type, emoji=emoji)
         lines.append(f"{'### ' if fmt == 'md' else ''}{cat_name}:")
         for c in commits:
             scope = f"{c['scope']}: " if c['scope'] else ""
@@ -176,6 +220,7 @@ def format_output(from_v, to_v, categorized, fmt='text'):
         lines.append("")
     
     return '\n'.join(lines)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Generate changelog between versions')
@@ -187,6 +232,20 @@ def main():
     parser.add_argument('--copy', '-c', action='store_true', help='Copy to clipboard')
     parser.add_argument('--ai', '-a', action='store_true', help='Use AI to summarize')
     parser.add_argument('--config', action='store_true', help='Configure AI API')
+    emoji_group = parser.add_mutually_exclusive_group()
+    emoji_group.add_argument(
+        '--emoji',
+        dest='emoji',
+        action='store_true',
+        help='Output with emoji (override config)',
+    )
+    emoji_group.add_argument(
+        '--no-emoji',
+        dest='emoji',
+        action='store_false',
+        help='Output without emoji (override config)',
+    )
+    parser.set_defaults(emoji=None)
     
     args = parser.parse_args()
     
@@ -200,6 +259,12 @@ def main():
         config['key'] = input(f"API Key [{config.get('key', '')[:8] + '...' if config.get('key') else ''}]: ").strip() or config.get('key', '')
         config['model'] = input(f"Model [{config.get('model', 'gpt-3.5-turbo')}]: ").strip() or config.get('model', 'gpt-3.5-turbo')
         config['lang'] = input(f"Language (zh/en) [{config.get('lang', 'zh')}]: ").strip() or config.get('lang', 'zh')
+        emoji_default = 'y' if config.get('emoji', False) else 'n'
+        emoji_input = input(f"Emoji (y/n) [{emoji_default}]: ").strip().lower()
+        if emoji_input:
+            config['emoji'] = emoji_input in ('y', 'yes', 'true', '1')
+        else:
+            config['emoji'] = config.get('emoji', False)
         save_config(config)
         return
     
@@ -221,13 +286,25 @@ def main():
         sys.exit(1)
     
     commits = get_commits_between(args.from_version, args.to_version)
+
+    config = load_config()
+    if args.emoji is None:
+        emoji_enabled = config.get('emoji', False)
+    else:
+        emoji_enabled = args.emoji
     
     if args.ai:
-        config = load_config()
+        config['emoji'] = emoji_enabled
         output = call_ai(commits, args.from_version, args.to_version, config)
     else:
         categorized = categorize_commits(commits)
-        output = format_output(args.from_version, args.to_version, categorized, args.format)
+        output = format_output(
+            args.from_version,
+            args.to_version,
+            categorized,
+            fmt=args.format,
+            emoji=emoji_enabled,
+        )
     
     print(output)
     

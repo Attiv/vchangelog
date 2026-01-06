@@ -7,6 +7,8 @@ import argparse
 import sys
 import os
 import json
+import ssl
+import certifi
 
 CONFIG_PATH = os.path.expanduser('~/.vchangelog.json')
 
@@ -131,7 +133,8 @@ def call_ai(commits, from_v, to_v, config):
     )
     
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=60, context=context) as resp:
             result = json.loads(resp.read())
             stop_event.set()
             spin_thread.join()

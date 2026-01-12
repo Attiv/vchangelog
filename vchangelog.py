@@ -62,7 +62,7 @@ def spinner(stop_event):
     sys.stdout.flush()
 
 
-def call_ai(commits, from_v, to_v, config):
+def call_ai(commits, from_v, to_v, config, lang='zh'):
     """Call AI API to summarize commits."""
     import urllib.request
     import threading
@@ -70,7 +70,6 @@ def call_ai(commits, from_v, to_v, config):
     url = config.get('url', '').rstrip('/')
     key = config.get('key', '')
     model = config.get('model', 'gpt-3.5-turbo')
-    lang = config.get('lang', 'zh')
     emoji = config.get('emoji', False)
     
     if not url or not key:
@@ -139,6 +138,85 @@ def call_ai(commits, from_v, to_v, config):
             stop_event.set()
             spin_thread.join()
             return result['choices'][0]['message']['content']
+    except Exception as e:
+        stop_event.set()
+        spin_thread.join()
+        print(f"AI 调用失败: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_staged_diff():
+    """获取 staged 的 diff 内容"""
+    result = subprocess.run(['git', 'diff', '--cached'], capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def generate_commit_message(config, lang='zh'):
+    """用 AI 生成 commit 消息"""
+    import urllib.request
+    import threading
+
+    diff = get_staged_diff()
+    if not diff:
+        print("没有 staged 的更改，请先 git add", file=sys.stderr)
+        sys.exit(1)
+
+    url = config.get('url', '').rstrip('/')
+    key = config.get('key', '')
+    model = config.get('model', 'gpt-3.5-turbo')
+
+    if not url or not key:
+        print("错误: 请先配置 AI API (vchangelog --config)", file=sys.stderr)
+        sys.exit(1)
+
+    stop_event = threading.Event()
+    spin_thread = threading.Thread(target=spinner, args=(stop_event,))
+    spin_thread.start()
+
+    if lang == 'zh':
+        prompt = (
+            "根据以下 git diff 生成一条 commit 消息。\n"
+            "要求：\n"
+            "1. 使用 conventional commits 格式：type(scope): description\n"
+            "2. type 必须是: feat/fix/docs/style/refactor/perf/test/chore 之一\n"
+            "3. scope 可选，描述影响范围\n"
+            "4. description 用简洁的中文，不超过50字\n"
+            "5. 只输出 commit 消息本身，不要其他解释\n\n"
+            f"Diff:\n{diff}"
+        )
+    else:
+        prompt = (
+            "Generate a commit message based on the following git diff.\n"
+            "Requirements:\n"
+            "1. Use conventional commits format: type(scope): description\n"
+            "2. type must be one of: feat/fix/docs/style/refactor/perf/test/chore\n"
+            "3. scope is optional, describes the affected area\n"
+            "4. description should be concise, under 50 characters\n"
+            "5. Output only the commit message, no explanations\n\n"
+            f"Diff:\n{diff}"
+        )
+
+    data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode()
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json"
+        }
+    )
+
+    try:
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=60, context=context) as resp:
+            result = json.loads(resp.read())
+            stop_event.set()
+            spin_thread.join()
+            return result['choices'][0]['message']['content'].strip()
     except Exception as e:
         stop_event.set()
         spin_thread.join()
@@ -235,6 +313,7 @@ def main():
     parser.add_argument('--copy', '-c', action='store_true', help='Copy to clipboard')
     parser.add_argument('--ai', '-a', action='store_true', help='Use AI to summarize')
     parser.add_argument('--config', action='store_true', help='Configure AI API')
+    parser.add_argument('--commit', '--cm', action='store_true', help='Generate commit message with AI')
     emoji_group = parser.add_mutually_exclusive_group()
     emoji_group.add_argument(
         '--emoji',
@@ -249,9 +328,27 @@ def main():
         help='Output without emoji (override config)',
     )
     parser.set_defaults(emoji=None)
+
+    lang_group = parser.add_mutually_exclusive_group()
+    lang_group.add_argument('--zh', dest='lang', action='store_const', const='zh', help='中文输出')
+    lang_group.add_argument('--en', dest='lang', action='store_const', const='en', help='English output')
+    parser.set_defaults(lang='en')
     
     args = parser.parse_args()
     
+    # AI 生成 commit 消息
+    if args.commit:
+        config = load_config()
+        msg = generate_commit_message(config, lang=args.lang)
+        print(msg)
+        if args.copy:
+            try:
+                subprocess.run(['pbcopy'], input=msg.encode(), check=True)
+                print("(Copied to clipboard)", file=sys.stderr)
+            except:
+                print("(Could not copy to clipboard)", file=sys.stderr)
+        return
+
     # 配置 AI
     if args.config:
         config = load_config()
@@ -261,7 +358,6 @@ def main():
         config['url'] = input(f"API URL [{config.get('url', '')}]: ").strip() or config.get('url', '')
         config['key'] = input(f"API Key [{config.get('key', '')[:8] + '...' if config.get('key') else ''}]: ").strip() or config.get('key', '')
         config['model'] = input(f"Model [{config.get('model', 'gpt-3.5-turbo')}]: ").strip() or config.get('model', 'gpt-3.5-turbo')
-        config['lang'] = input(f"Language (zh/en) [{config.get('lang', 'zh')}]: ").strip() or config.get('lang', 'zh')
         emoji_default = 'y' if config.get('emoji', False) else 'n'
         emoji_input = input(f"Emoji (y/n) [{emoji_default}]: ").strip().lower()
         if emoji_input:
@@ -298,7 +394,7 @@ def main():
     
     if args.ai:
         config['emoji'] = emoji_enabled
-        output = call_ai(commits, args.from_version, args.to_version, config)
+        output = call_ai(commits, args.from_version, args.to_version, config, lang=args.lang)
     else:
         categorized = categorize_commits(commits)
         output = format_output(

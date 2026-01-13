@@ -46,6 +46,12 @@ vchangelog 1.0.0+68 1.0.1+71 -f md
 # 复制到剪贴板 / Copy to clipboard
 vchangelog 1.0.0+68 1.0.1+71 --copy
 vchangelog --latest --ai --copy
+
+# 查看 git diff / View git diff
+vchangelog 1.0.0+68 1.0.1+71 --diff
+vchangelog 1.0.1+71 --diff
+vchangelog --latest --diff
+vchangelog --diff
 ```
 
 ## 输出示例 / Output Example

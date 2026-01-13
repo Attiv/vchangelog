@@ -15,6 +15,7 @@ CONFIG_PATH = os.path.expanduser('~/.vchangelog.json')
 # 支持多种版本格式: 3.0.6+71, v1.2.3, 1.0.0, 2.0.0-beta.1 等
 VERSION_PATTERN = r'^v?\d+\.\d+(\.\d+)?([+\-].+)?$'
 COMMIT_PATTERN = r'\[([a-f0-9]+)\] \| (.+?) \{\{.+\}\}'
+ANSI_ESCAPE_PATTERN = re.compile(r'\x1b\[[0-9;]*m')
 
 CATEGORIES = {
     'feat': ('✨ Features', 1),
@@ -250,6 +251,116 @@ def find_commit_for_version(version):
     return None
 
 
+def get_diff_range(from_version, to_version):
+    from_hash = find_commit_for_version(from_version)
+    to_hash = find_commit_for_version(to_version)
+
+    if not from_hash or not to_hash:
+        print("未找到版本对应的提交", file=sys.stderr)
+        sys.exit(1)
+
+    return f'{from_hash}..{to_hash}'
+
+
+def get_previous_version(target_version):
+    versions = get_versions()
+    if target_version not in versions:
+        print("未找到版本号", file=sys.stderr)
+        sys.exit(1)
+
+    index = versions.index(target_version)
+    if index + 1 >= len(versions):
+        print("没有更早的版本可用于对比", file=sys.stderr)
+        sys.exit(1)
+
+    return versions[index + 1]
+
+
+def format_diff_with_separators(diff_text):
+    if not diff_text:
+        return diff_text
+
+    lines = diff_text.splitlines()
+    formatted = []
+    sep_line = '-' * 72
+
+    for line in lines:
+        clean_line = ANSI_ESCAPE_PATTERN.sub('', line)
+        if clean_line.startswith('diff --git '):
+            parts = clean_line.split()
+            file_label = ''
+            if len(parts) >= 4:
+                a_path = parts[2][2:] if parts[2].startswith('a/') else parts[2]
+                b_path = parts[3][2:] if parts[3].startswith('b/') else parts[3]
+                file_label = f"{a_path} -> {b_path}" if a_path != b_path else a_path
+            if formatted:
+                formatted.append(sep_line)
+            formatted.append(sep_line)
+            if file_label:
+                formatted.append(f"File: {file_label}")
+            formatted.append(sep_line)
+        formatted.append(line)
+
+    return '\n'.join(formatted)
+
+
+def build_diff_args(color, extra_args):
+    args = []
+    if color:
+        args.extend([
+            '-c', 'color.ui=always',
+            '-c', 'color.diff.meta=yellow bold',
+            '-c', 'color.diff.frag=cyan bold',
+            '-c', 'color.diff.old=red bold',
+            '-c', 'color.diff.new=green bold',
+            'diff',
+            '--color=always',
+        ])
+    else:
+        args.extend(['diff', '--color=never'])
+    args.extend(extra_args)
+    return args
+
+
+def build_diff_output(from_version, to_version, color=True):
+    diff_range = get_diff_range(from_version, to_version)
+    sections = [f"Diff: {from_version} → {to_version}\n"]
+
+    diff_stat = run_git(build_diff_args(color, ['--stat', diff_range])).rstrip('\n')
+    if diff_stat:
+        sections.append("变更概览:")
+        sections.append(diff_stat)
+        sections.append("")
+
+    diff_body = run_git(build_diff_args(color, [diff_range])).rstrip('\n')
+    if diff_body:
+        sections.append("详细差异:")
+        sections.append(format_diff_with_separators(diff_body))
+    else:
+        sections.append("没有差异")
+
+    return '\n'.join(sections)
+
+
+def build_working_tree_diff_output(color=True):
+    sections = ["Diff: working tree\n"]
+
+    diff_stat = run_git(build_diff_args(color, ['--stat'])).rstrip('\n')
+    if diff_stat:
+        sections.append("变更概览:")
+        sections.append(diff_stat)
+        sections.append("")
+
+    diff_body = run_git(build_diff_args(color, [])).rstrip('\n')
+    if diff_body:
+        sections.append("详细差异:")
+        sections.append(format_diff_with_separators(diff_body))
+    else:
+        sections.append("没有差异")
+
+    return '\n'.join(sections)
+
+
 def get_commits_between(from_version, to_version):
     from_hash = find_commit_for_version(from_version)
     to_hash = find_commit_for_version(to_version)
@@ -314,6 +425,7 @@ def main():
     parser.add_argument('--ai', '-a', action='store_true', help='Use AI to summarize')
     parser.add_argument('--config', action='store_true', help='Configure AI API')
     parser.add_argument('--commit', '--cm', action='store_true', help='Generate commit message with AI')
+    parser.add_argument('--diff', '--d', action='store_true', help='Show git diff between versions')
     emoji_group = parser.add_mutually_exclusive_group()
     emoji_group.add_argument(
         '--emoji',
@@ -371,6 +483,38 @@ def main():
         for v in get_versions()[:20]:
             print(v)
         return
+
+    if args.diff:
+        use_color = sys.stdout.isatty()
+        if args.latest:
+            versions = get_versions()
+            if len(versions) < 2:
+                print("Need at least 2 versions", file=sys.stderr)
+                sys.exit(1)
+            args.to_version = versions[0]
+            args.from_version = versions[1]
+        elif args.from_version and not args.to_version:
+            args.to_version = args.from_version
+            args.from_version = get_previous_version(args.to_version)
+        elif not args.from_version and not args.to_version:
+            output = build_working_tree_diff_output(color=use_color)
+            print(output)
+            if args.copy:
+                try:
+                    subprocess.run(['pbcopy'], input=output.encode(), check=True)
+                    print("(Copied to clipboard)", file=sys.stderr)
+                except:
+                    print("(Could not copy to clipboard)", file=sys.stderr)
+            return
+        output = build_diff_output(args.from_version, args.to_version, color=use_color)
+        print(output)
+        if args.copy:
+            try:
+                subprocess.run(['pbcopy'], input=output.encode(), check=True)
+                print("(Copied to clipboard)", file=sys.stderr)
+            except:
+                print("(Could not copy to clipboard)", file=sys.stderr)
+        return
     
     if args.latest:
         versions = get_versions()
@@ -379,11 +523,11 @@ def main():
             sys.exit(1)
         args.to_version = versions[0]
         args.from_version = versions[1]
-    
+
     if not args.from_version or not args.to_version:
         parser.print_help()
         sys.exit(1)
-    
+
     commits = get_commits_between(args.from_version, args.to_version)
 
     config = load_config()

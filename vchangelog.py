@@ -152,12 +152,19 @@ def get_staged_diff():
     return result.stdout.strip()
 
 
+def get_staged_files():
+    """获取 staged 的文件列表"""
+    result = subprocess.run(['git', 'diff', '--cached', '--name-status'], capture_output=True, text=True)
+    return result.stdout.strip()
+
+
 def generate_commit_message(config, lang='zh'):
     """用 AI 生成 commit 消息"""
     import urllib.request
     import threading
 
     diff = get_staged_diff()
+    staged_files = get_staged_files()
     if not diff:
         print("没有 staged 的更改，请先 git add", file=sys.stderr)
         sys.exit(1)
@@ -176,24 +183,30 @@ def generate_commit_message(config, lang='zh'):
 
     if lang == 'zh':
         prompt = (
-            "根据以下 git diff 生成一条 commit 消息。\n"
+            "根据以下 git diff 生成简洁的 commit 消息。\n"
             "要求：\n"
-            "1. 使用 conventional commits 格式：type(scope): description\n"
+            "1. 使用 conventional commits 格式：type(scope): description 作为首行\n"
             "2. type 必须是: feat/fix/docs/style/refactor/perf/test/chore 之一\n"
             "3. scope 可选，描述影响范围\n"
             "4. description 用简洁的中文，不超过50字\n"
-            "5. 只输出 commit 消息本身，不要其他解释\n\n"
+            "5. 输出总共1-2句，必要时可在空行后追加一句简短补充说明（无项目符号）\n"
+            "6. 优先基于文件列表和 diff，避免臆测\n"
+            "7. 只输出 commit 消息本身（可多行），不要其他解释\n\n"
+            f"Staged files:\n{staged_files}\n\n"
             f"Diff:\n{diff}"
         )
     else:
         prompt = (
-            "Generate a commit message based on the following git diff.\n"
+            "Generate a concise commit message based on the following git diff.\n"
             "Requirements:\n"
-            "1. Use conventional commits format: type(scope): description\n"
+            "1. Use conventional commits format: type(scope): description as the first line\n"
             "2. type must be one of: feat/fix/docs/style/refactor/perf/test/chore\n"
             "3. scope is optional, describes the affected area\n"
             "4. description should be concise, under 50 characters\n"
-            "5. Output only the commit message, no explanations\n\n"
+            "5. Output 1-2 sentences total; if needed, add a short second sentence after a blank line (no bullets)\n"
+            "6. Prefer the file list and diff; avoid speculation\n"
+            "7. Output only the commit message itself (may be multi-line), no explanations\n\n"
+            f"Staged files:\n{staged_files}\n\n"
             f"Diff:\n{diff}"
         )
 
